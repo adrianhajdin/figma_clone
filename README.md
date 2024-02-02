@@ -126,6 +126,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser to view the 
 
 ## <a name="snippets">🕸️ Snippets</a>
 
+### Styles
+
 <details>
 <summary><code>tailwind.config.ts</code></summary>
 
@@ -221,6 +223,8 @@ export default config;
 ```
 
 </details>
+
+### Overlay Comments
 
 <details>
 <summary><code>NewThread</code></summary>
