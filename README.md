@@ -222,6 +222,585 @@ export default config;
 
 </details>
 
+<details>
+<summary><code>NewThread</code></summary>
+
+```tsx
+"use client";
+
+import {
+  FormEvent,
+  ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Slot } from "@radix-ui/react-slot";
+import * as Portal from "@radix-ui/react-portal";
+import { ComposerSubmitComment } from "@liveblocks/react-comments/primitives";
+
+import { useCreateThread } from "@/liveblocks.config";
+import { useMaxZIndex } from "@/lib/useMaxZIndex";
+
+import PinnedComposer from "./PinnedComposer";
+import NewThreadCursor from "./NewThreadCursor";
+
+type ComposerCoords = null | { x: number; y: number };
+
+type Props = {
+  children: ReactNode;
+};
+
+export const NewThread = ({ children }: Props) => {
+  // set state to track if we're placing a new comment or not
+  const [creatingCommentState, setCreatingCommentState] = useState<
+    "placing" | "placed" | "complete"
+  >("complete");
+
+  /**
+   * We're using the useCreateThread hook to create a new thread.
+   *
+   * useCreateThread: https://liveblocks.io/docs/api-reference/liveblocks-react#useCreateThread
+   */
+  const createThread = useCreateThread();
+
+  // get the max z-index of a thread
+  const maxZIndex = useMaxZIndex();
+
+  // set state to track the coordinates of the composer (liveblocks comment editor)
+  const [composerCoords, setComposerCoords] = useState<ComposerCoords>(null);
+
+  // set state to track the last pointer event
+  const lastPointerEvent = useRef<PointerEvent>();
+
+  // set state to track if user is allowed to use the composer
+  const [allowUseComposer, setAllowUseComposer] = useState(false);
+  const allowComposerRef = useRef(allowUseComposer);
+  allowComposerRef.current = allowUseComposer;
+
+  useEffect(() => {
+    // If composer is already placed, don't do anything
+    if (creatingCommentState === "complete") {
+      return;
+    }
+
+    // Place a composer on the screen
+    const newComment = (e: MouseEvent) => {
+      e.preventDefault();
+
+      // If already placed, click outside to close composer
+      if (creatingCommentState === "placed") {
+        // check if the click event is on/inside the composer
+        const isClickOnComposer = ((e as any)._savedComposedPath = e
+          .composedPath()
+          .some((el: any) => {
+            return el.classList?.contains("lb-composer-editor-actions");
+          }));
+
+        // if click is inisde/on composer, don't do anything
+        if (isClickOnComposer) {
+          return;
+        }
+
+        // if click is outside composer, close composer
+        if (!isClickOnComposer) {
+          setCreatingCommentState("complete");
+          return;
+        }
+      }
+
+      // First click sets composer down
+      setCreatingCommentState("placed");
+      setComposerCoords({
+        x: e.clientX,
+        y: e.clientY,
+      });
+    };
+
+    document.documentElement.addEventListener("click", newComment);
+
+    return () => {
+      document.documentElement.removeEventListener("click", newComment);
+    };
+  }, [creatingCommentState]);
+
+  useEffect(() => {
+    // If dragging composer, update position
+    const handlePointerMove = (e: PointerEvent) => {
+      // Prevents issue with composedPath getting removed
+      (e as any)._savedComposedPath = e.composedPath();
+      lastPointerEvent.current = e;
+    };
+
+    document.documentElement.addEventListener("pointermove", handlePointerMove);
+
+    return () => {
+      document.documentElement.removeEventListener(
+        "pointermove",
+        handlePointerMove
+      );
+    };
+  }, []);
+
+  // Set pointer event from last click on body for use later
+  useEffect(() => {
+    if (creatingCommentState !== "placing") {
+      return;
+    }
+
+    const handlePointerDown = (e: PointerEvent) => {
+      // if composer is already placed, don't do anything
+      if (allowComposerRef.current) {
+        return;
+      }
+
+      // Prevents issue with composedPath getting removed
+      (e as any)._savedComposedPath = e.composedPath();
+      lastPointerEvent.current = e;
+      setAllowUseComposer(true);
+    };
+
+    // Right click to cancel placing
+    const handleContextMenu = (e: Event) => {
+      if (creatingCommentState === "placing") {
+        e.preventDefault();
+        setCreatingCommentState("complete");
+      }
+    };
+
+    document.documentElement.addEventListener("pointerdown", handlePointerDown);
+    document.documentElement.addEventListener("contextmenu", handleContextMenu);
+
+    return () => {
+      document.documentElement.removeEventListener(
+        "pointerdown",
+        handlePointerDown
+      );
+      document.documentElement.removeEventListener(
+        "contextmenu",
+        handleContextMenu
+      );
+    };
+  }, [creatingCommentState]);
+
+  // On composer submit, create thread and reset state
+  const handleComposerSubmit = useCallback(
+    ({ body }: ComposerSubmitComment, event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Get your canvas element
+      const overlayPanel = document.querySelector("#canvas");
+
+      // if there's no composer coords or last pointer event, meaning the user hasn't clicked yet, don't do anything
+      if (!composerCoords || !lastPointerEvent.current || !overlayPanel) {
+        return;
+      }
+
+      // Set coords relative to the top left of your canvas
+      const { top, left } = overlayPanel.getBoundingClientRect();
+      const x = composerCoords.x - left;
+      const y = composerCoords.y - top;
+
+      // create a new thread with the composer coords and cursor selectors
+      createThread({
+        body,
+        metadata: {
+          x,
+          y,
+          resolved: false,
+          zIndex: maxZIndex + 1,
+        },
+      });
+
+      setComposerCoords(null);
+      setCreatingCommentState("complete");
+      setAllowUseComposer(false);
+    },
+    [createThread, composerCoords, maxZIndex]
+  );
+
+  return (
+    <>
+      {/**
+       * Slot is used to wrap the children of the NewThread component
+       * to allow us to add a click event listener to the children
+       *
+       * Slot: https://www.radix-ui.com/primitives/docs/utilities/slot
+       *
+       * Disclaimer: We don't have to download this package specifically,
+       * it's already included when we install Shadcn
+       */}
+      <Slot
+        onClick={() =>
+          setCreatingCommentState(
+            creatingCommentState !== "complete" ? "complete" : "placing"
+          )
+        }
+        style={{ opacity: creatingCommentState !== "complete" ? 0.7 : 1 }}
+      >
+        {children}
+      </Slot>
+
+      {/* if composer coords exist and we're placing a comment, render the composer */}
+      {composerCoords && creatingCommentState === "placed" ? (
+        /**
+         * Portal.Root is used to render the composer outside of the NewThread component to avoid z-index issuess
+         *
+         * Portal.Root: https://www.radix-ui.com/primitives/docs/utilities/portal
+         */
+        <Portal.Root
+          className='absolute left-0 top-0'
+          style={{
+            pointerEvents: allowUseComposer ? "initial" : "none",
+            transform: `translate(${composerCoords.x}px, ${composerCoords.y}px)`,
+          }}
+          data-hide-cursors
+        >
+          <PinnedComposer onComposerSubmit={handleComposerSubmit} />
+        </Portal.Root>
+      ) : null}
+
+      {/* Show the customizing cursor when placing a comment. The one with comment shape */}
+      <NewThreadCursor display={creatingCommentState === "placing"} />
+    </>
+  );
+};
+```
+
+</details>
+
+<details>
+<summary><code>PinnedComposer</code></summary>
+
+```tsx
+"use client";
+
+import Image from "next/image";
+import { Composer, ComposerProps } from "@liveblocks/react-comments";
+
+type Props = {
+  onComposerSubmit: ComposerProps["onComposerSubmit"];
+};
+
+const PinnedComposer = ({ onComposerSubmit, ...props }: Props) => {
+  return (
+    <div className="absolute flex gap-4" {...props}>
+      <div className="select-none relative w-9 h-9 shadow rounded-tl-md rounded-tr-full rounded-br-full rounded-bl-full bg-white flex justify-center items-center">
+        <Image
+          src={`https://liveblocks.io/avatars/avatar-${Math.floor(Math.random() * 30)}.png`}
+          alt="someone"
+          width={28}
+          height={28}
+          className="rounded-full"
+        />
+      </div>
+      <div className="shadow bg-white rounded-lg flex flex-col text-sm min-w-96 overflow-hidden p-2">
+        {/**
+         * We're using the Composer component to create a new comment.
+         * Liveblocks provides a Composer component that allows to
+         * create/edit/delete comments.
+         *
+         * Composer: https://liveblocks.io/docs/api-reference/liveblocks-react-comments#Composer
+         */}
+        <Composer
+          onComposerSubmit={onComposerSubmit}
+          autoFocus={true}
+          onKeyUp={(e) => {
+            e.stopPropagation()
+          }}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default PinnedComposer;
+```
+
+</details>
+
+<details>
+<summary><code>NewThreadCursor</code></summary>
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import * as Portal from "@radix-ui/react-portal";
+
+const DEFAULT_CURSOR_POSITION = -10000;
+
+// display a custom cursor when placing a new thread
+const NewThreadCursor = ({ display }: { display: boolean }) => {
+  const [coords, setCoords] = useState({
+    x: DEFAULT_CURSOR_POSITION,
+    y: DEFAULT_CURSOR_POSITION,
+  });
+
+  useEffect(() => {
+    const updatePosition = (e: MouseEvent) => {
+      // get canvas element
+      const canvas = document.getElementById("canvas");
+
+      if (canvas) {
+        /**
+         * getBoundingClientRect returns the size of an element and its position relative to the viewport
+         *
+         * getBoundingClientRect: https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect
+         */
+        const canvasRect = canvas.getBoundingClientRect();
+
+        // check if the mouse is outside the canvas
+        // if so, hide the custom comment cursor
+        if (
+          e.clientX < canvasRect.left ||
+          e.clientX > canvasRect.right ||
+          e.clientY < canvasRect.top ||
+          e.clientY > canvasRect.bottom
+        ) {
+          setCoords({
+            x: DEFAULT_CURSOR_POSITION,
+            y: DEFAULT_CURSOR_POSITION,
+          });
+          return;
+        }
+      }
+
+      // set the coordinates of the cursor
+      setCoords({
+        x: e.clientX,
+        y: e.clientY,
+      });
+    };
+
+    document.addEventListener("mousemove", updatePosition, false);
+    document.addEventListener("mouseenter", updatePosition, false);
+
+    return () => {
+      document.removeEventListener("mousemove", updatePosition);
+      document.removeEventListener("mouseenter", updatePosition);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (display) {
+      document.documentElement.classList.add("hide-cursor");
+    } else {
+      document.documentElement.classList.remove("hide-cursor");
+    }
+  }, [display]);
+
+  if (!display) {
+    return null;
+  }
+
+  return (
+    // Portal.Root is used to render a component outside of its parent component
+    <Portal.Root>
+      <div
+        className="pointer-events-none fixed left-0 top-0 h-9 w-9 cursor-grab select-none rounded-bl-full rounded-br-full rounded-tl-md rounded-tr-full bg-white shadow-2xl"
+        style={{
+          transform: `translate(${coords.x}px, ${coords.y}px)`,
+        }}
+      />
+    </Portal.Root>
+  );
+};
+
+export default NewThreadCursor;
+```
+
+</details>
+
+<details>
+<summary><code>CommentsOverlay</code></summary>
+
+```tsx
+"use client";
+
+import { useCallback, useRef } from "react";
+import { ThreadData } from "@liveblocks/client";
+
+import { ThreadMetadata, useEditThreadMetadata, useThreads, useUser } from "@/liveblocks.config";
+import { useMaxZIndex } from "@/lib/useMaxZIndex";
+
+import { PinnedThread } from "./PinnedThread";
+
+type OverlayThreadProps = {
+  thread: ThreadData<ThreadMetadata>;
+  maxZIndex: number;
+};
+
+export const CommentsOverlay = () => {
+  /**
+   * We're using the useThreads hook to get the list of threads
+   * in the room.
+   *
+   * useThreads: https://liveblocks.io/docs/api-reference/liveblocks-react#useThreads
+   */
+  const { threads } = useThreads();
+
+  // get the max z-index of a thread
+  const maxZIndex = useMaxZIndex();
+
+  return (
+    <div>
+      {threads
+        .filter((thread) => !thread.metadata.resolved)
+        .map((thread) => (
+          <OverlayThread key={thread.id} thread={thread} maxZIndex={maxZIndex} />
+        ))}
+    </div>
+  );
+};
+
+const OverlayThread = ({ thread, maxZIndex }: OverlayThreadProps) => {
+  /**
+   * We're using the useEditThreadMetadata hook to edit the metadata
+   * of a thread.
+   *
+   * useEditThreadMetadata: https://liveblocks.io/docs/api-reference/liveblocks-react#useEditThreadMetadata
+   */
+  const editThreadMetadata = useEditThreadMetadata();
+
+  /**
+   * We're using the useUser hook to get the user of the thread.
+   *
+   * useUser: https://liveblocks.io/docs/api-reference/liveblocks-react#useUser
+   */
+  const { isLoading } = useUser(thread.comments[0].userId);
+
+  // We're using a ref to get the thread element to position it
+  const threadRef = useRef<HTMLDivElement>(null);
+
+  // If other thread(s) above, increase z-index on last element updated
+  const handleIncreaseZIndex = useCallback(() => {
+    if (maxZIndex === thread.metadata.zIndex) {
+      return;
+    }
+
+    // Update the z-index of the thread in the room
+    editThreadMetadata({
+      threadId: thread.id,
+      metadata: {
+        zIndex: maxZIndex + 1,
+      },
+    });
+  }, [thread, editThreadMetadata, maxZIndex]);
+
+  if (isLoading) {
+    return null;
+  }
+
+  return (
+    <div
+      ref={threadRef}
+      id={`thread-${thread.id}`}
+      className="absolute left-0 top-0 flex gap-5"
+      style={{
+        transform: `translate(${thread.metadata.x}px, ${thread.metadata.y}px)`,
+      }}
+    >
+      {/* render the thread */}
+      <PinnedThread thread={thread} onFocus={handleIncreaseZIndex} />
+    </div>
+  );
+};
+```
+
+</details>
+
+<details>
+<summary><code>PinnedThread</code></summary>
+
+```tsx
+"use client";
+
+import Image from "next/image";
+import { useMemo, useState } from "react";
+import { ThreadData } from "@liveblocks/client";
+import { Thread } from "@liveblocks/react-comments";
+
+import { ThreadMetadata } from "@/liveblocks.config";
+
+type Props = {
+  thread: ThreadData<ThreadMetadata>;
+  onFocus: (threadId: string) => void;
+};
+
+export const PinnedThread = ({ thread, onFocus, ...props }: Props) => {
+  // Open pinned threads that have just been created
+  const startMinimized = useMemo(
+    () => Number(new Date()) - Number(new Date(thread.createdAt)) > 100,
+    [thread]
+  );
+
+  const [minimized, setMinimized] = useState(startMinimized);
+
+  /**
+   * memoize the result of this function so that it doesn't change on every render but only when the thread changes
+   * Memo is used to optimize performance and avoid unnecessary re-renders.
+   *
+   * useMemo: https://react.dev/reference/react/useMemo
+   */
+
+  const memoizedContent = useMemo(
+    () => (
+      <div
+        className='absolute flex cursor-pointer gap-4'
+        {...props}
+        onClick={(e: any) => {
+          onFocus(thread.id);
+
+          // check if click is on/in the composer
+          if (
+            e.target &&
+            e.target.classList.contains("lb-icon") &&
+            e.target.classList.contains("lb-button-icon")
+          ) {
+            return;
+          }
+
+          setMinimized(!minimized);
+        }}
+      >
+        <div
+          className='relative flex h-9 w-9 select-none items-center justify-center rounded-bl-full rounded-br-full rounded-tl-md rounded-tr-full bg-white shadow'
+          data-draggable={true}
+        >
+          <Image
+            src={`https://liveblocks.io/avatars/avatar-${Math.floor(Math.random() * 30)}.png`}
+            alt='Dummy Name'
+            width={28}
+            height={28}
+            draggable={false}
+            className='rounded-full'
+          />
+        </div>
+        {!minimized ? (
+          <div className='flex min-w-60 flex-col overflow-hidden rounded-lg bg-white text-sm shadow'>
+            <Thread
+              thread={thread}
+              indentCommentContent={false}
+              onKeyUp={(e) => {
+                e.stopPropagation();
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
+    ),
+    [thread.comments.length, minimized]
+  );
+
+  return <>{memoizedContent}</>;
+};
+```
+
+</details>
+
 ## <a name="links">🔗 Links</a>
 
 - [Assets](https://drive.google.com/file/d/17tRs0sEiIsCeTYEXhWEdHMrTshuz2oYf/view?usp=sharing)
